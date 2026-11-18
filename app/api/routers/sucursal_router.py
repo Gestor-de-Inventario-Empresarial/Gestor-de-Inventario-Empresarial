@@ -1,9 +1,15 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, status
+from fastapi.responses import JSONResponse
 
+from app.core.exceptions import ErrorNegocio
 from app.core.responses import respuesta
-from app.domain.entities.sucursal import SucursalCreate, SucursalUpdate
+from app.domain.entities.sucursal import (
+    SucursalCreate,
+    SucursalEstadoUpdate,
+    SucursalUpdate,
+)
 from app.repositories.sucursal_repository import sucursal_repository
 from app.services.sucursal_service import SucursalService
 
@@ -215,3 +221,127 @@ def actualizar_sucursal(
     """Actualiza el nombre y dirección de una sucursal de la empresa activa."""
     sucursal = service.actualizar(id_sucursal=id_sucursal, id_empresa=id_empresa, datos=datos)
     return respuesta(True, sucursal, "Sucursal actualizada exitosamente")
+
+
+# PATCH /api/v1/sucursales/{id_sucursal}/estado  (HU-05)
+@router.patch(
+    "/{id_sucursal}/estado",
+    summary="Activar o inactivar una sucursal",
+    description=(
+        "Cambia el estado de una sucursal ('activa' o 'inactiva') de forma independiente al resto "
+        "de la empresa. Antes de inactivar, verifica en el módulo de Traslados que la sucursal "
+        "no tenga traslados en curso."
+    ),
+    responses={
+        200: {
+            "description": "Estado de la sucursal actualizado exitosamente",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Estado de la sucursal actualizado exitosamente",
+                        "data": {
+                            "id_sucursal": 2,
+                            "estado": "inactiva",
+                        },
+                        "success": True,
+                    }
+                }
+            },
+        },
+        400: {
+            "description": "Valor de estado no válido",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "El estado debe ser 'activa' o 'inactiva'",
+                        "data": None,
+                        "success": False,
+                    }
+                }
+            },
+        },
+        404: {
+            "description": "Sucursal no encontrada",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Sucursal no encontrada",
+                        "data": None,
+                        "success": False,
+                    }
+                }
+            },
+        },
+        409: {
+            "description": "Conflicto: la sucursal ya tiene ese estado o existen traslados en curso",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "traslados_en_curso": {
+                            "summary": "Bloqueo por traslados pendientes",
+                            "value": {
+                                "message": "No es posible inactivar la sucursal: existen traslados en curso",
+                                "data": {
+                                    "id_sucursal": 2,
+                                    "traslados_pendientes": [
+                                        {
+                                            "id_traslado": 12,
+                                            "sucursal_origen": "Sucursal Centro",
+                                            "sucursal_destino": "Sucursal Norte",
+                                        }
+                                    ],
+                                },
+                                "success": False,
+                            },
+                        },
+                        "mismo_estado": {
+                            "summary": "La sucursal ya tiene el estado solicitado",
+                            "value": {
+                                "message": "La sucursal ya se encuentra en el estado solicitado",
+                                "data": None,
+                                "success": False,
+                            },
+                        },
+                    }
+                }
+            },
+        },
+        503: {
+            "description": "Falla en la base de datos o en el módulo de Traslados",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "No fue posible cambiar el estado de la sucursal",
+                        "data": None,
+                        "success": False,
+                    }
+                }
+            },
+        },
+    },
+)
+def cambiar_estado_sucursal(
+    id_sucursal: int,
+    datos: SucursalEstadoUpdate,
+    id_empresa: int = Depends(obtener_id_empresa_sesion),
+):
+    """Activa o inactiva una sucursal de la empresa activa."""
+    try:
+        resultado = service.cambiar_estado(
+            id_sucursal=id_sucursal,
+            id_empresa=id_empresa,
+            datos=datos,
+        )
+    except ErrorNegocio as e:
+        if getattr(e, "data", None) is not None:
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "message": str(e),
+                    "data": e.data,
+                    "success": False,
+                },
+            )
+        raise
+
+    return respuesta(True, resultado, "Estado de la sucursal actualizado exitosamente")

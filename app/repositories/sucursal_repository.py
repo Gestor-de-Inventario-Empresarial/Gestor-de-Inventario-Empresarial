@@ -24,7 +24,6 @@ class SucursalRepository:
         return sucursal
 
     def listar_por_empresa(self, id_empresa: int, estado: Optional[str] = None) -> list[Sucursal]:
-        
         resultado = [s for s in self._datos if s.id_empresa == id_empresa]
         if estado:
             estado_buscado = estado.strip().lower()
@@ -43,6 +42,11 @@ class SucursalRepository:
                 self._datos[i] = sucursal
                 break
         return sucursal
+
+    # HU-05: punto de enlace con MOD-03 (Traslados.consultarPendientes)
+    def consultar_traslados_pendientes(self, id_sucursal: int) -> list[dict]:
+        
+        return []
 
 
 # Instancia única compartida por todo el programa

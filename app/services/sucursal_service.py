@@ -1,10 +1,16 @@
 from typing import Optional
 
 from app.core.exceptions import ErrorNegocio
-from app.domain.entities.sucursal import Sucursal, SucursalCreate, SucursalUpdate
+from app.domain.entities.sucursal import (
+    Sucursal,
+    SucursalCreate,
+    SucursalEstadoUpdate,
+    SucursalUpdate,
+)
 from app.repositories.sucursal_repository import SucursalRepository
 
 MENSAJE_FALLA = "No fue posible procesar la solicitud de sucursal"
+MENSAJE_FALLA_ESTADO = "No fue posible cambiar el estado de la sucursal"
 MENSAJE_NO_ENCONTRADA = "Sucursal no encontrada"
 
 
@@ -71,3 +77,31 @@ class SucursalService:
             raise ErrorNegocio(MENSAJE_FALLA, 503) from e
 
         return actualizada.to_response()
+
+    # ── HU-05: activar e inactivar sucursal ───────────────────
+    def cambiar_estado(
+        self, id_sucursal: int, id_empresa: int, datos: SucursalEstadoUpdate
+    ) -> dict:
+        try:
+            sucursal = self.repo.buscar_por_id_y_empresa(id_sucursal, id_empresa)
+        except Exception as e:
+            raise ErrorNegocio(MENSAJE_FALLA_ESTADO, 503) from e
+
+        if sucursal is None:
+            raise ErrorNegocio(MENSAJE_NO_ENCONTRADA, 404)
+
+        traslados_pendientes: list[dict] = []
+        if datos.estado == "inactiva":
+            try:
+                traslados_pendientes = self.repo.consultar_traslados_pendientes(id_sucursal)
+            except Exception as e:
+                raise ErrorNegocio(MENSAJE_FALLA_ESTADO, 503) from e
+
+        sucursal.cambiar_estado(datos.estado, traslados_pendientes)
+
+        try:
+            actualizada = self.repo.actualizar(sucursal)
+        except Exception as e:
+            raise ErrorNegocio(MENSAJE_FALLA_ESTADO, 503) from e
+
+        return actualizada.to_estado_response()
