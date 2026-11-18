@@ -8,10 +8,23 @@ from app.core.exceptions import ErrorNegocio
 
 MENSAJE_OBLIGATORIOS = "Los campos nit, nombre, ubicacion y fecha_creacion son obligatorios"
 MENSAJE_INMUTABLES = "El NIT y la fecha de creación no pueden modificarse"
+MENSAJE_ESTADO_INVALIDO = "El estado debe ser 'activo' o 'inactivo'"
+MENSAJE_MISMO_ESTADO = "La empresa ya se encuentra en el estado solicitado"
+MENSAJE_TRASLADOS_PENDIENTES = "No es posible inactivar la empresa: existen traslados en curso"
+
+
+class ErrorTrasladosPendientes(ErrorNegocio):
+    """Excepción de dominio (RN-03) cuando existen traslados en curso al intentar inactivar."""
+
+    def __init__(self, id_empresa: int, traslados_pendientes: list[dict]):
+        super().__init__(MENSAJE_TRASLADOS_PENDIENTES, 409)
+        self.datos = {
+            "id_empresa": id_empresa,
+            "traslados_pendientes": traslados_pendientes,
+        }
 
 
 # ── HU-01: schema de ENTRADA del registro ─────────────────────
-# Si un campo no llega, se trata como vacío y se rechaza con el mensaje de la HU.
 class EmpresaCreate(BaseModel):
     nit: str = Field("", validate_default=True)
     nombre: str = Field("", validate_default=True)
@@ -36,13 +49,11 @@ class EmpresaCreate(BaseModel):
 
 
 # ── HU-02: schema de ENTRADA de la actualización de contacto ──
-# Todos los campos son opcionales: solo se modifican los que lleguen.
 class EmpresaUpdate(BaseModel):
     telefono: Optional[str] = None
     correo: Optional[str] = None
     ubicacion: Optional[str] = None
 
-    # El NIT y la fecha de creación nunca se modifican
     @model_validator(mode="before")
     @classmethod
     def rechazar_campos_inmutables(cls, valores):
@@ -84,6 +95,26 @@ class EmpresaUpdate(BaseModel):
         return self
 
 
+# ── HU-03: schema de ENTRADA del cambio de estado operativo ───
+class EmpresaEstadoUpdate(BaseModel):
+    estado: str = Field(
+        "",
+        validate_default=True,
+        description="Nuevo estado operativo de la empresa: 'activo' o 'inactivo'",
+        examples=["inactivo"],
+    )
+
+    @field_validator("estado", mode="before")
+    @classmethod
+    def validar_estado(cls, v):
+        if not isinstance(v, str):
+            raise ValueError(MENSAJE_ESTADO_INVALIDO)
+        valor = v.strip().lower()
+        if valor not in ("activo", "inactivo"):
+            raise ValueError(MENSAJE_ESTADO_INVALIDO)
+        return valor
+
+
 # ── Entidad del dominio: guarda los datos y las reglas de negocio ──
 class Empresa:
     def __init__(self, id: Optional[int], nit: str, nombre: str, ubicacion: str,
@@ -110,15 +141,13 @@ class Empresa:
                 "La empresa no cumple la antigüedad mínima de 2 años para registrarse", 400
             )
 
-    # RN-02: el NIT no puede estar registrado. El servicio consulta al
-    # repositorio y le pasa el resultado; el dominio solo decide.
+    # RN-02: el NIT no puede estar registrado
     @staticmethod
     def validar_nit_unico(nit_ya_registrado: bool):
         if nit_ya_registrado:
             raise ErrorNegocio("El NIT ya se encuentra registrado en el sistema", 409)
 
-    # HU-02: solo se cambian los datos de contacto que lleguen.
-    # El NIT y la fecha de creación no se tocan.
+    # HU-02: actualizar datos de contacto sin tocar NIT ni fecha de creación
     def actualizar_contacto(self, telefono: Optional[str], correo: Optional[str],
                             ubicacion: Optional[str]):
         if telefono is not None:
@@ -127,6 +156,20 @@ class Empresa:
             self.correo = correo
         if ubicacion is not None:
             self.ubicacion = ubicacion
+
+    # HU-03: la empresa no debe estar ya en el estado solicitado
+    def validar_cambio_estado(self, nuevo_estado: str):
+        if self.estado == nuevo_estado:
+            raise ErrorNegocio(MENSAJE_MISMO_ESTADO, 409)
+
+    # RN-03 (HU-03): no se puede inactivar si existen traslados en curso
+    def validar_sin_traslados_pendientes(self, traslados_pendientes: list[dict]):
+        if traslados_pendientes:
+            raise ErrorTrasladosPendientes(self.id, traslados_pendientes)
+
+    # HU-03: aplicar cambio de estado operativo
+    def cambiar_estado(self, nuevo_estado: str):
+        self.estado = nuevo_estado
 
     # Respuesta de HU-01 (registro)
     def to_response(self) -> dict:
@@ -159,4 +202,12 @@ class Empresa:
             "telefono": self.telefono,
             "correo": self.correo,
             "ubicacion": self.ubicacion,
+        }
+
+    # Respuesta de HU-03 (cambio de estado)
+    def to_estado(self, sucursales_afectadas: int) -> dict:
+        return {
+            "id_empresa": self.id,
+            "estado": self.estado,
+            "sucursales_afectadas": sucursales_afectadas,
         }
