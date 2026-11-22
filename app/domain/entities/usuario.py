@@ -12,7 +12,17 @@ from pydantic import BaseModel, Field, model_validator
 from app.core.exceptions import ErrorNegocio
 
 MENSAJE_CAMPOS_OBLIGATORIOS = "El correo y la contraseña son obligatorios"
+MENSAJE_NOMBRE_OBLIGATORIO = "El nombre del usuario es obligatorio"
+MENSAJE_CORREO_OBLIGATORIO = "El correo electrónico es obligatorio"
 MENSAJE_CORREO_INVALIDO = "El correo no tiene un formato válido"
+MENSAJE_CONTRASENA_CORTA = "La contraseña debe tener al menos 8 caracteres"
+MENSAJE_ROL_INVALIDO = "El rol debe ser 'Administrador' o 'Usuario'"
+MENSAJE_CORREO_DUPLICADO = "El correo ya se encuentra registrado"
+MENSAJE_SIN_PERMISO_CREAR = "No tiene permisos para crear usuarios"
+MENSAJE_SUCURSAL_INACTIVA_USUARIO = (
+    "No se pueden crear usuarios en una sucursal inactiva"
+)
+
 MENSAJE_CREDENCIALES_INCORRECTAS = "Credenciales incorrectas"
 MENSAJE_ACCESO_INACTIVO = (
     "El acceso no está habilitado: la cuenta, la sucursal o la empresa se encuentra inactiva"
@@ -20,6 +30,7 @@ MENSAJE_ACCESO_INACTIVO = (
 
 PATRON_CORREO = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 CLAVE_SECRETA_TOKEN = "gestor-inventario-jwt-secret-key"
+ROLES_VALIDOS = {"administrador": "Administrador", "usuario": "Usuario"}
 
 
 class LoginRequest(BaseModel):
@@ -53,6 +64,49 @@ class LoginRequest(BaseModel):
         return valores
 
 
+class UsuarioCreate(BaseModel):
+    nombre: Optional[str] = Field(default=None)
+    correo: Optional[str] = Field(default=None)
+    contrasena: Optional[str] = Field(default=None)
+    rol: Optional[str] = Field(default=None)
+    id_sucursal: int = Field(...)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validar_datos_usuario(cls, valores):
+        if not isinstance(valores, dict):
+            raise ValueError(MENSAJE_NOMBRE_OBLIGATORIO)
+
+        nombre = valores.get("nombre")
+        if nombre is None or not isinstance(nombre, str) or not nombre.strip():
+            raise ValueError(MENSAJE_NOMBRE_OBLIGATORIO)
+
+        correo = valores.get("correo")
+        if correo is None or not isinstance(correo, str) or not correo.strip():
+            raise ValueError(MENSAJE_CORREO_OBLIGATORIO)
+
+        correo_limpio = correo.strip().lower()
+        if not PATRON_CORREO.match(correo_limpio):
+            raise ValueError(MENSAJE_CORREO_INVALIDO)
+
+        contrasena = valores.get("contrasena")
+        if (
+            contrasena is None
+            or not isinstance(contrasena, str)
+            or len(contrasena) < 8
+        ):
+            raise ValueError(MENSAJE_CONTRASENA_CORTA)
+
+        rol = valores.get("rol")
+        if rol is None or not isinstance(rol, str) or rol.strip().lower() not in ROLES_VALIDOS:
+            raise ValueError(MENSAJE_ROL_INVALIDO)
+
+        valores["nombre"] = nombre.strip()
+        valores["correo"] = correo_limpio
+        valores["rol"] = ROLES_VALIDOS[rol.strip().lower()]
+        return valores
+
+
 class Usuario:
     def __init__(
         self,
@@ -63,7 +117,7 @@ class Usuario:
         correo: str,
         password_hash: str,
         rol: str = "Usuario",
-        estado: str = "activa",
+        estado: str = "activo",
     ):
         self.id = id
         self.id_empresa = id_empresa
@@ -93,6 +147,34 @@ class Usuario:
         ).hex()
         return hmac.compare_digest(derivado, hash_esperado)
 
+    # ── Reglas HU-12 en Domain ────────────────────────────────
+    @staticmethod
+    def validar_permiso_administrador(rol_sesion: str):
+        if not isinstance(rol_sesion, str) or rol_sesion.strip().lower() != "administrador":
+            raise ErrorNegocio(MENSAJE_SIN_PERMISO_CREAR, 403)
+
+    @staticmethod
+    def validar_correo_unico(correo_ya_existe: bool):
+        if correo_ya_existe:
+            raise ErrorNegocio(MENSAJE_CORREO_DUPLICADO, 409)
+
+    @staticmethod
+    def validar_rol_valido(rol: str) -> str:
+        if not isinstance(rol, str) or rol.strip().lower() not in ROLES_VALIDOS:
+            raise ErrorNegocio(MENSAJE_ROL_INVALIDO, 400)
+        return ROLES_VALIDOS[rol.strip().lower()]
+
+    @staticmethod
+    def validar_longitud_contrasena(contrasena: str):
+        if not isinstance(contrasena, str) or len(contrasena) < 8:
+            raise ErrorNegocio(MENSAJE_CONTRASENA_CORTA, 400)
+
+    @staticmethod
+    def validar_sucursal_activa_para_usuario(estado_sucursal: str):
+        if estado_sucursal.strip().lower() != "activa":
+            raise ErrorNegocio(MENSAJE_SUCURSAL_INACTIVA_USUARIO, 409)
+
+    # ── Reglas HU-11 en Domain ────────────────────────────────
     @staticmethod
     def validar_estados_activos(
         estado_usuario: str, estado_sucursal: str, estado_empresa: str
@@ -137,4 +219,14 @@ class Usuario:
             "nombre": self.nombre,
             "rol": self.rol,
             "id_sucursal": self.id_sucursal,
+        }
+
+    def to_response(self) -> dict:
+        return {
+            "id_usuario": self.id,
+            "nombre": self.nombre,
+            "correo": self.correo,
+            "rol": self.rol,
+            "id_sucursal": self.id_sucursal,
+            "estado": self.estado,
         }
