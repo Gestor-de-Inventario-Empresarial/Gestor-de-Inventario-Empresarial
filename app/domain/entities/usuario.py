@@ -28,9 +28,25 @@ MENSAJE_ACCESO_INACTIVO = (
     "El acceso no está habilitado: la cuenta, la sucursal o la empresa se encuentra inactiva"
 )
 
+MENSAJE_SIN_PERMISO_ADMINISTRAR = "No tiene permisos para administrar usuarios"
+MENSAJE_ROL_O_ESTADO_INVALIDO = "El rol o el estado indicado no es válido"
+MENSAJE_ULTIMO_ADMIN_DESACTIVAR = (
+    "No es posible desactivar al único Administrador activo de la empresa"
+)
+MENSAJE_ULTIMO_ADMIN_ROL = (
+    "No es posible quitar el rol al único Administrador activo de la empresa"
+)
+MENSAJE_SUCURSAL_CAMBIO_INACTIVA = (
+    "La sucursal no es válida para el cambio: se encuentra inactiva"
+)
+MENSAJE_SUCURSAL_CAMBIO_INVALIDA = (
+    "La sucursal no es válida para el cambio: no existe en la empresa"
+)
+
 PATRON_CORREO = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 CLAVE_SECRETA_TOKEN = "gestor-inventario-jwt-secret-key"
 ROLES_VALIDOS = {"administrador": "Administrador", "usuario": "Usuario"}
+ESTADOS_VALIDOS = ("activo", "inactivo")
 
 
 class LoginRequest(BaseModel):
@@ -107,6 +123,51 @@ class UsuarioCreate(BaseModel):
         return valores
 
 
+class UsuarioUpdate(BaseModel):
+    rol: Optional[str] = Field(default=None)
+    id_sucursal: Optional[int] = Field(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validar_actualizacion(cls, valores):
+        if not isinstance(valores, dict):
+            raise ValueError(MENSAJE_ROL_O_ESTADO_INVALIDO)
+
+        rol = valores.get("rol")
+        id_sucursal = valores.get("id_sucursal")
+
+        if rol is None and id_sucursal is None:
+            raise ValueError(MENSAJE_ROL_O_ESTADO_INVALIDO)
+
+        if rol is not None:
+            if not isinstance(rol, str) or rol.strip().lower() not in ROLES_VALIDOS:
+                raise ValueError(MENSAJE_ROL_O_ESTADO_INVALIDO)
+            valores["rol"] = ROLES_VALIDOS[rol.strip().lower()]
+
+        return valores
+
+
+class UsuarioEstadoUpdate(BaseModel):
+    estado: Optional[str] = Field(default=None, validate_default=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validar_estado_usuario(cls, valores):
+        if not isinstance(valores, dict):
+            raise ValueError(MENSAJE_ROL_O_ESTADO_INVALIDO)
+
+        estado = valores.get("estado")
+        if (
+            estado is None
+            or not isinstance(estado, str)
+            or estado.strip().lower() not in ESTADOS_VALIDOS
+        ):
+            raise ValueError(MENSAJE_ROL_O_ESTADO_INVALIDO)
+
+        valores["estado"] = estado.strip().lower()
+        return valores
+
+
 class Usuario:
     def __init__(
         self,
@@ -136,7 +197,6 @@ class Usuario:
         ).hex()
         return f"{salt}${derivado}"
 
-    # RN-08: comparación cifrada contra hash guardado (nunca en texto plano)
     @staticmethod
     def validar_credencial_cifrada(contrasena_plana: str, password_hash: str) -> bool:
         if not contrasena_plana or not password_hash or "$" not in password_hash:
@@ -147,11 +207,12 @@ class Usuario:
         ).hex()
         return hmac.compare_digest(derivado, hash_esperado)
 
-    # ── Reglas HU-12 en Domain ────────────────────────────────
     @staticmethod
-    def validar_permiso_administrador(rol_sesion: str):
+    def validar_permiso_administrador(
+        rol_sesion: str, mensaje: str = MENSAJE_SIN_PERMISO_CREAR
+    ):
         if not isinstance(rol_sesion, str) or rol_sesion.strip().lower() != "administrador":
-            raise ErrorNegocio(MENSAJE_SIN_PERMISO_CREAR, 403)
+            raise ErrorNegocio(mensaje, 403)
 
     @staticmethod
     def validar_correo_unico(correo_ya_existe: bool):
@@ -159,10 +220,16 @@ class Usuario:
             raise ErrorNegocio(MENSAJE_CORREO_DUPLICADO, 409)
 
     @staticmethod
-    def validar_rol_valido(rol: str) -> str:
+    def validar_rol_valido(rol: str, mensaje: str = MENSAJE_ROL_INVALIDO) -> str:
         if not isinstance(rol, str) or rol.strip().lower() not in ROLES_VALIDOS:
-            raise ErrorNegocio(MENSAJE_ROL_INVALIDO, 400)
+            raise ErrorNegocio(mensaje, 400)
         return ROLES_VALIDOS[rol.strip().lower()]
+
+    @staticmethod
+    def validar_estado_valido(estado: str) -> str:
+        if not isinstance(estado, str) or estado.strip().lower() not in ESTADOS_VALIDOS:
+            raise ErrorNegocio(MENSAJE_ROL_O_ESTADO_INVALIDO, 400)
+        return estado.strip().lower()
 
     @staticmethod
     def validar_longitud_contrasena(contrasena: str):
@@ -170,11 +237,23 @@ class Usuario:
             raise ErrorNegocio(MENSAJE_CONTRASENA_CORTA, 400)
 
     @staticmethod
-    def validar_sucursal_activa_para_usuario(estado_sucursal: str):
+    def validar_sucursal_activa_para_usuario(
+        estado_sucursal: str, mensaje: str = MENSAJE_SUCURSAL_INACTIVA_USUARIO
+    ):
         if estado_sucursal.strip().lower() != "activa":
-            raise ErrorNegocio(MENSAJE_SUCURSAL_INACTIVA_USUARIO, 409)
+            raise ErrorNegocio(mensaje, 409)
 
-    # ── Reglas HU-11 en Domain ────────────────────────────────
+    @staticmethod
+    def validar_ultimo_administrador(
+        es_admin_activo_actual: bool,
+        total_admins_activos_empresa: int,
+        accion: str,
+    ):
+        if es_admin_activo_actual and total_admins_activos_empresa <= 1:
+            if accion == "desactivar":
+                raise ErrorNegocio(MENSAJE_ULTIMO_ADMIN_DESACTIVAR, 409)
+            raise ErrorNegocio(MENSAJE_ULTIMO_ADMIN_ROL, 409)
+
     @staticmethod
     def validar_estados_activos(
         estado_usuario: str, estado_sucursal: str, estado_empresa: str
@@ -226,6 +305,15 @@ class Usuario:
             "id_usuario": self.id,
             "nombre": self.nombre,
             "correo": self.correo,
+            "rol": self.rol,
+            "id_sucursal": self.id_sucursal,
+            "estado": self.estado,
+        }
+
+    def to_list_response(self) -> dict:
+        return {
+            "id_usuario": self.id,
+            "nombre": self.nombre,
             "rol": self.rol,
             "id_sucursal": self.id_sucursal,
             "estado": self.estado,

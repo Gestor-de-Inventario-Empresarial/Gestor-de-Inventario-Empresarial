@@ -26,8 +26,44 @@ class UsuarioRepository:
         buscado = correo.strip().lower()
         return next((u for u in self._datos if u.correo == buscado), None)
 
+    def buscar_por_id_y_empresa(
+        self, id_usuario: int, id_empresa: int
+    ) -> Optional[Usuario]:
+        return next(
+            (
+                u
+                for u in self._datos
+                if u.id == id_usuario and u.id_empresa == id_empresa
+            ),
+            None,
+        )
+
     def existe_correo(self, correo: str) -> bool:
         return self.buscar_por_correo(correo) is not None
+
+    def listar_por_empresa(
+        self,
+        id_empresa: int,
+        id_sucursal: Optional[int] = None,
+        estado: Optional[str] = None,
+    ) -> list[Usuario]:
+        estado_norm = estado.strip().lower() if estado else None
+        return [
+            u
+            for u in self._datos
+            if u.id_empresa == id_empresa
+            and (id_sucursal is None or u.id_sucursal == id_sucursal)
+            and (estado_norm is None or u.estado.strip().lower() == estado_norm)
+        ]
+
+    def contar_administradores_activos(self, id_empresa: int) -> int:
+        return sum(
+            1
+            for u in self._datos
+            if u.id_empresa == id_empresa
+            and u.rol.strip().lower() == "administrador"
+            and u.estado.strip().lower() in ("activo", "activa")
+        )
 
     def crear(self, usuario: Usuario) -> Usuario:
         usuario.id = self._siguiente_id
@@ -35,7 +71,13 @@ class UsuarioRepository:
         self._datos.append(usuario)
         return usuario
 
-    # Punto de enlace con MOD-01 (INT-11: Sucursales.consultarSucursal)
+    def actualizar(self, usuario: Usuario) -> Usuario:
+        for i, existente in enumerate(self._datos):
+            if existente.id == usuario.id:
+                self._datos[i] = usuario
+                break
+        return usuario
+
     def consultar_sucursal(self, id_sucursal: int) -> Optional[dict]:
         sucursal = next(
             (s for s in sucursal_repository._datos if s.id == id_sucursal),
@@ -54,7 +96,6 @@ class UsuarioRepository:
         sucursal = self.consultar_sucursal(id_sucursal)
         return sucursal["estado"] if sucursal else None
 
-    # Punto de enlace con MOD-01 (INT-12: Empresas.validarEstado)
     def obtener_estado_empresa(self, id_empresa: int) -> Optional[str]:
         empresa = next(
             (e for e in empresa_repository._datos if e.id == id_empresa),
@@ -62,7 +103,6 @@ class UsuarioRepository:
         )
         return empresa.estado if empresa else None
 
-    # Punto de enlace con MOD-06 (INT-14: Suscripciones.consultarEstado)
     def consultar_estado_suscripcion(self, id_empresa: int) -> str:
         return self._suscripciones_empresa.get(id_empresa, "activa")
 
