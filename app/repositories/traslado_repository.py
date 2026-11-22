@@ -1,12 +1,13 @@
 from typing import Optional
 
+from app.domain.entities.traslado import Traslado
 from app.repositories.producto_repository import producto_repository
 from app.repositories.sucursal_repository import sucursal_repository
 
 
 class TrasladoRepository:
     def __init__(self):
-        self._datos: list = []
+        self._datos: list[Traslado] = []
         self._siguiente_id: int = 1
 
     def obtener_sucursal(self, id_sucursal: int) -> Optional[dict]:
@@ -67,6 +68,27 @@ class TrasladoRepository:
             )
 
         return referencia.nombre, referencia.codigo, resultados
+
+    def consultar_stock_producto(
+        self, id_producto: int, id_sucursal_origen: int
+    ) -> Optional[dict]:
+        producto = producto_repository.buscar_por_id_y_sucursal(
+            id_producto, id_sucursal_origen
+        )
+        if producto is None:
+            return None
+        return {
+            "id_producto": producto.id,
+            "codigo": producto.codigo,
+            "nombre": producto.nombre,
+            "cantidad": producto.cantidad,
+        }
+
+    def crear(self, traslado: Traslado) -> Traslado:
+        traslado.id = self._siguiente_id
+        self._siguiente_id += 1
+        self._datos.append(traslado)
+        return traslado
 
 
 traslado_repository = TrasladoRepository()

@@ -1,10 +1,11 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, Query, status
 from fastapi.responses import JSONResponse
 
 from app.core.exceptions import ErrorNegocio
 from app.core.responses import respuesta
+from app.domain.entities.traslado import TrasladoCreate
 from app.repositories.traslado_repository import traslado_repository
 from app.services.traslado_service import TrasladoService
 
@@ -26,6 +27,21 @@ def obtener_sesion_consulta(
     ),
 ) -> tuple[int, Optional[str]]:
     return x_sucursal_id, authorization
+
+
+def obtener_sesion_radicacion(
+    x_sucursal_id: int = Header(
+        default=1,
+        alias="X-Sucursal-Id",
+        description="ID de la sucursal solicitante en sesión",
+    ),
+    x_rol: str = Header(
+        default="Usuario",
+        alias="X-Rol",
+        description="Rol del usuario en sesión ('Administrador' o 'Usuario')",
+    ),
+) -> tuple[int, str]:
+    return x_sucursal_id, x_rol
 
 
 def _manejar_error_traslado(error: ErrorNegocio):
@@ -64,3 +80,26 @@ def buscar_disponibilidad(
         return _manejar_error_traslado(e)
 
     return respuesta(True, datos, "Consulta de disponibilidad exitosa")
+
+
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    summary="Radicar solicitud de traslado",
+    description="Radica una solicitud de traslado en estado pendiente validando sucursales activas y stock disponible en origen sin alterar inventarios.",
+)
+def radicar_traslado(
+    datos: TrasladoCreate,
+    sesion: tuple[int, str] = Depends(obtener_sesion_radicacion),
+):
+    id_sucursal_solicitante, rol_usuario = sesion
+    try:
+        traslado = service.radicar(
+            id_sucursal_solicitante=id_sucursal_solicitante,
+            rol_usuario=rol_usuario,
+            datos=datos,
+        )
+    except ErrorNegocio as e:
+        return _manejar_error_traslado(e)
+
+    return respuesta(True, traslado, "Solicitud de traslado radicada exitosamente")
