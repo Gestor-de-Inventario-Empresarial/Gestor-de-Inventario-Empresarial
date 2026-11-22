@@ -1,5 +1,7 @@
 from typing import Optional
 
+from pydantic import BaseModel, Field, field_validator
+
 from app.core.exceptions import ErrorNegocio
 
 MENSAJE_NO_AUTENTICADO = "Debe iniciar sesión para realizar la consulta"
@@ -13,8 +15,54 @@ MENSAJE_SIN_EXISTENCIAS = (
     "No hay existencias del producto en las demás sucursales de la empresa"
 )
 
+MENSAJE_CANTIDAD_INVALIDA = "La cantidad debe ser un número entero mayor a cero"
+MENSAJE_MISMA_SUCURSAL = "La sucursal de origen debe ser distinta a la solicitante"
+MENSAJE_EMPRESA_DISTINTA = "La sucursal de origen debe pertenecer a la misma empresa"
+MENSAJE_ORIGEN_INACTIVA = "La sucursal de origen se encuentra inactiva"
+MENSAJE_SOLICITANTE_INACTIVA = "La sucursal solicitante se encuentra inactiva"
+MENSAJE_STOCK_INSUFICIENTE = (
+    "La cantidad solicitada supera el stock disponible en la sucursal de origen"
+)
+MENSAJE_SIN_PERMISO = "No tiene permisos para radicar traslados"
+
+ROLES_OPERATIVOS_VALIDOS = ("administrador", "usuario")
+
+
+class TrasladoCreate(BaseModel):
+    id_sucursal_origen: int = Field(...)
+    id_producto: int = Field(...)
+    cantidad: int = Field(...)
+
+    @field_validator("cantidad")
+    @classmethod
+    def validar_cantidad_positiva(cls, v: int) -> int:
+        if isinstance(v, bool) or v <= 0:
+            raise ValueError(MENSAJE_CANTIDAD_INVALIDA)
+        return v
+
 
 class Traslado:
+    def __init__(
+        self,
+        id: Optional[int],
+        id_sucursal_origen: int,
+        id_sucursal_destino: int,
+        id_producto: int,
+        cantidad: int,
+        estado: str = "pendiente",
+        fecha_solicitud: str = "",
+        motivo_rechazo: Optional[str] = None,
+    ):
+        self.id = id
+        self.id_sucursal_origen = id_sucursal_origen
+        self.id_sucursal_destino = id_sucursal_destino
+        self.id_producto = id_producto
+        self.cantidad = cantidad
+        self.estado = estado
+        self.fecha_solicitud = fecha_solicitud
+        self.motivo_rechazo = motivo_rechazo
+
+    # ── Reglas HU-08 ──────────────────────────────────────────
     @staticmethod
     def validar_sesion_autenticada(token: Optional[str]):
         if token is None or not token.strip():
@@ -67,3 +115,57 @@ class Traslado:
             raise error
 
         return disponibles
+
+    # ── Reglas HU-09 (RN-06 y RN-07) ──────────────────────────
+    @staticmethod
+    def validar_permiso_operativo(rol: str):
+        if not isinstance(rol, str) or rol.strip().lower() not in ROLES_OPERATIVOS_VALIDOS:
+            raise ErrorNegocio(MENSAJE_SIN_PERMISO, 403)
+
+    @staticmethod
+    def validar_sucursales_traslado(
+        id_sucursal_origen: int,
+        id_sucursal_solicitante: int,
+        empresa_origen: int,
+        empresa_solicitante: int,
+        estado_origen: str,
+        estado_solicitante: str,
+    ):
+        if id_sucursal_origen == id_sucursal_solicitante:
+            raise ErrorNegocio(MENSAJE_MISMA_SUCURSAL, 400)
+
+        if empresa_origen != empresa_solicitante:
+            raise ErrorNegocio(MENSAJE_EMPRESA_DISTINTA, 409)
+
+        if estado_origen.strip().lower() != "activa":
+            raise ErrorNegocio(MENSAJE_ORIGEN_INACTIVA, 409)
+
+        if estado_solicitante.strip().lower() != "activa":
+            raise ErrorNegocio(MENSAJE_SOLICITANTE_INACTIVA, 409)
+
+    @staticmethod
+    def validar_disponibilidad(cantidad_solicitada: int, cantidad_disponible: int):
+        if cantidad_solicitada <= 0:
+            raise ErrorNegocio(MENSAJE_CANTIDAD_INVALIDA, 400)
+
+        if cantidad_solicitada > cantidad_disponible:
+            error = ErrorNegocio(MENSAJE_STOCK_INSUFICIENTE, 409)
+            error.data = {
+                "cantidad_solicitada": cantidad_solicitada,
+                "cantidad_disponible": cantidad_disponible,
+            }
+            raise error
+
+    def confirmar_ejecucion(self) -> bool:
+        return self.estado == "completado"
+
+    def to_response(self) -> dict:
+        return {
+            "id_traslado": self.id,
+            "id_sucursal_origen": self.id_sucursal_origen,
+            "id_sucursal_destino": self.id_sucursal_destino,
+            "id_producto": self.id_producto,
+            "cantidad": self.cantidad,
+            "estado": self.estado,
+            "fecha_solicitud": self.fecha_solicitud,
+        }
