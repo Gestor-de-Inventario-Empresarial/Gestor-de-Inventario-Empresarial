@@ -25,6 +25,18 @@ MENSAJE_STOCK_INSUFICIENTE = (
 )
 MENSAJE_SIN_PERMISO = "No tiene permisos para radicar traslados"
 
+MENSAJE_STOCK_INSUFICIENTE_ACEPTAR = (
+    "Ya no hay disponibilidad suficiente para completar el traslado"
+)
+MENSAJE_TRASLADO_GESTIONADO = "El traslado ya fue gestionado y no puede modificarse"
+MENSAJE_MOTIVO_RECHAZO_OBLIGATORIO = "El motivo del rechazo es obligatorio"
+MENSAJE_SOLO_ORIGEN_GESTIONA = (
+    "Solo la sucursal de origen puede gestionar esta solicitud"
+)
+MENSAJE_SUCURSAL_INVOLUCRADA_INACTIVA = (
+    "Una de las sucursales involucradas se encuentra inactiva"
+)
+
 ROLES_OPERATIVOS_VALIDOS = ("administrador", "usuario")
 
 
@@ -39,6 +51,17 @@ class TrasladoCreate(BaseModel):
         if isinstance(v, bool) or v <= 0:
             raise ValueError(MENSAJE_CANTIDAD_INVALIDA)
         return v
+
+
+class TrasladoRechazo(BaseModel):
+    motivo: Optional[str] = Field(default=None, validate_default=True)
+
+    @field_validator("motivo", mode="before")
+    @classmethod
+    def validar_motivo_obligatorio(cls, v):
+        if v is None or not isinstance(v, str) or not v.strip():
+            raise ValueError(MENSAJE_MOTIVO_RECHAZO_OBLIGATORIO)
+        return v.strip()
 
 
 class Traslado:
@@ -116,7 +139,7 @@ class Traslado:
 
         return disponibles
 
-    # ── Reglas HU-09 (RN-06 y RN-07) ──────────────────────────
+    # ── Reglas HU-09 y HU-10 (RN-06 y RN-07) ──────────────────
     @staticmethod
     def validar_permiso_operativo(rol: str):
         if not isinstance(rol, str) or rol.strip().lower() not in ROLES_OPERATIVOS_VALIDOS:
@@ -144,20 +167,49 @@ class Traslado:
             raise ErrorNegocio(MENSAJE_SOLICITANTE_INACTIVA, 409)
 
     @staticmethod
-    def validar_disponibilidad(cantidad_solicitada: int, cantidad_disponible: int):
+    def validar_disponibilidad(
+        cantidad_solicitada: int,
+        cantidad_disponible: int,
+        mensaje_insuficiente: str = MENSAJE_STOCK_INSUFICIENTE,
+    ):
         if cantidad_solicitada <= 0:
             raise ErrorNegocio(MENSAJE_CANTIDAD_INVALIDA, 400)
 
         if cantidad_solicitada > cantidad_disponible:
-            error = ErrorNegocio(MENSAJE_STOCK_INSUFICIENTE, 409)
+            error = ErrorNegocio(mensaje_insuficiente, 409)
             error.data = {
                 "cantidad_solicitada": cantidad_solicitada,
                 "cantidad_disponible": cantidad_disponible,
             }
             raise error
 
-    def confirmar_ejecucion(self) -> bool:
-        return self.estado == "completado"
+    def validar_gestionable_por_origen(self, id_sucursal_sesion: int):
+        if self.id_sucursal_origen != id_sucursal_sesion:
+            raise ErrorNegocio(MENSAJE_SOLO_ORIGEN_GESTIONA, 403)
+
+        if self.estado != "pendiente":
+            raise ErrorNegocio(MENSAJE_TRASLADO_GESTIONADO, 409)
+
+    @staticmethod
+    def validar_sucursales_activas_ejecucion(estado_origen: str, estado_destino: str):
+        if (
+            estado_origen.strip().lower() != "activa"
+            or estado_destino.strip().lower() != "activa"
+        ):
+            raise ErrorNegocio(MENSAJE_SUCURSAL_INVOLUCRADA_INACTIVA, 409)
+
+    def confirmar_ejecucion(self):
+        if self.estado != "pendiente":
+            raise ErrorNegocio(MENSAJE_TRASLADO_GESTIONADO, 409)
+        self.estado = "completado"
+
+    def rechazar(self, motivo: str):
+        if not isinstance(motivo, str) or not motivo.strip():
+            raise ErrorNegocio(MENSAJE_MOTIVO_RECHAZO_OBLIGATORIO, 400)
+        if self.estado != "pendiente":
+            raise ErrorNegocio(MENSAJE_TRASLADO_GESTIONADO, 409)
+        self.estado = "rechazado"
+        self.motivo_rechazo = motivo.strip()
 
     def to_response(self) -> dict:
         return {
