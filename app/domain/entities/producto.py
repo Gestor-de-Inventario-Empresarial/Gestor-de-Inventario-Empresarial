@@ -10,6 +10,12 @@ MENSAJE_CODIGO_DUPLICADO = "El código de producto ya existe en esta sucursal"
 MENSAJE_INMUTABLES = "El código y la sucursal propietaria no pueden modificarse"
 MENSAJE_SUCURSAL_INACTIVA = "La sucursal se encuentra inactiva"
 
+MENSAJE_MOTIVO_OBLIGATORIO = "El motivo del retiro es obligatorio"
+MENSAJE_MOTIVO_INVALIDO = "El motivo debe ser 'averia', 'vencimiento' o 'ajuste'"
+MENSAJE_TRASLADOS_PENDIENTES = "No es posible retirar el producto: tiene traslados en curso"
+
+MOTIVOS_RETIRO_VALIDOS = ("averia", "vencimiento", "ajuste")
+
 
 # ── HU-06: schema de ENTRADA para registrar producto ──────────
 class ProductoCreate(BaseModel):
@@ -56,7 +62,22 @@ class ProductoUpdate(BaseModel):
         return self
 
 
-# ── Entidad del dominio: datos y reglas de negocio (RN-04, RN-05) ─
+# ── HU-07: schema de ENTRADA para retirar existencias ─────────
+class ProductoRetiroCreate(BaseModel):
+    motivo: Optional[str] = Field(default=None, validate_default=True, examples=["averia"])
+
+    @field_validator("motivo", mode="before")
+    @classmethod
+    def validar_motivo(cls, v):
+        if v is None or not isinstance(v, str) or not v.strip():
+            raise ValueError(MENSAJE_MOTIVO_OBLIGATORIO)
+        normalizado = v.strip().lower()
+        if normalizado not in MOTIVOS_RETIRO_VALIDOS:
+            raise ValueError(MENSAJE_MOTIVO_INVALIDO)
+        return normalizado
+
+
+# ── Entidad del dominio: datos y reglas de negocio ────────────
 class Producto:
     def __init__(
         self,
@@ -94,6 +115,27 @@ class Producto:
         if estado_sucursal.strip().lower() != "activa":
             raise ErrorNegocio(MENSAJE_SUCURSAL_INACTIVA, 403)
 
+    # HU-07: validación de motivo de retiro en Domain
+    @staticmethod
+    def validar_motivo_retiro(motivo: str) -> str:
+        if not isinstance(motivo, str) or not motivo.strip():
+            raise ErrorNegocio(MENSAJE_MOTIVO_OBLIGATORIO, 400)
+        normalizado = motivo.strip().lower()
+        if normalizado not in MOTIVOS_RETIRO_VALIDOS:
+            raise ErrorNegocio(MENSAJE_MOTIVO_INVALIDO, 400)
+        return normalizado
+
+    # HU-07: bloqueo de retiro si el producto tiene traslados pendientes (INT-08)
+    @staticmethod
+    def validar_sin_traslados_pendientes(id_producto: int, traslados_pendientes: list[dict]):
+        if traslados_pendientes:
+            error = ErrorNegocio(MENSAJE_TRASLADOS_PENDIENTES, 409)
+            error.data = {
+                "id_producto": id_producto,
+                "traslados_pendientes": traslados_pendientes,
+            }
+            raise error
+
     def actualizar_stock_y_precio(
         self, precio: Optional[int | float], cantidad: Optional[int]
     ):
@@ -119,4 +161,13 @@ class Producto:
             "id_producto": self.id,
             "precio": self.precio,
             "cantidad": self.cantidad,
+        }
+
+    def to_existencia_response(self) -> dict:
+        return {
+            "id_producto": self.id,
+            "codigo": self.codigo,
+            "nombre": self.nombre,
+            "cantidad": self.cantidad,
+            "precio": self.precio,
         }
