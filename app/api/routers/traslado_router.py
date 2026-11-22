@@ -5,13 +5,23 @@ from fastapi.responses import JSONResponse
 
 from app.core.exceptions import ErrorNegocio
 from app.core.responses import respuesta
-from app.domain.entities.traslado import TrasladoCreate
+from app.domain.entities.traslado import TrasladoCreate, TrasladoRechazo
 from app.repositories.traslado_repository import traslado_repository
 from app.services.traslado_service import TrasladoService
 
 router = APIRouter(prefix="/api/v1/traslados", tags=["Traslados"])
 
 service = TrasladoService(repo=traslado_repository)
+
+
+def obtener_sucursal_sesion(
+    x_sucursal_id: int = Header(
+        default=1,
+        alias="X-Sucursal-Id",
+        description="ID de la sucursal activa en sesión",
+    )
+) -> int:
+    return x_sucursal_id
 
 
 def obtener_sesion_consulta(
@@ -103,3 +113,64 @@ def radicar_traslado(
         return _manejar_error_traslado(e)
 
     return respuesta(True, traslado, "Solicitud de traslado radicada exitosamente")
+
+
+@router.get(
+    "",
+    summary="Consultar solicitudes de traslado de la sucursal",
+    description="Lista las solicitudes de traslado enviadas o recibidas por la sucursal de la sesión, con filtros opcionales por estado y tipo.",
+)
+def consultar_traslados(
+    estado: Optional[str] = Query(
+        default=None,
+        description="Filtrar por estado: pendiente, completado o rechazado",
+    ),
+    tipo: Optional[str] = Query(
+        default=None,
+        description="Filtrar por rol de la sucursal: enviados o recibidos",
+    ),
+    id_sucursal: int = Depends(obtener_sucursal_sesion),
+):
+    traslados = service.listar_traslados(
+        id_sucursal=id_sucursal, estado=estado, tipo=tipo
+    )
+    return respuesta(True, traslados, "Consulta de traslados exitosa")
+
+
+@router.patch(
+    "/{id_traslado}/aceptar",
+    summary="Aceptar solicitud de traslado",
+    description="Acepta un traslado pendiente desde la sucursal de origen, descontando su stock, incrementando el de destino y marcándolo como completado.",
+)
+def aceptar_traslado(
+    id_traslado: int,
+    id_sucursal: int = Depends(obtener_sucursal_sesion),
+):
+    try:
+        resultado = service.aceptar(
+            id_traslado=id_traslado, id_sucursal_sesion=id_sucursal
+        )
+    except ErrorNegocio as e:
+        return _manejar_error_traslado(e)
+
+    return respuesta(True, resultado, "Traslado aceptado y completado exitosamente")
+
+
+@router.patch(
+    "/{id_traslado}/rechazar",
+    summary="Rechazar solicitud de traslado",
+    description="Rechaza un traslado pendiente desde la sucursal de origen registrando el motivo sin alterar el inventario.",
+)
+def rechazar_traslado(
+    id_traslado: int,
+    datos: TrasladoRechazo,
+    id_sucursal: int = Depends(obtener_sucursal_sesion),
+):
+    try:
+        resultado = service.rechazar(
+            id_traslado=id_traslado, id_sucursal_sesion=id_sucursal, datos=datos
+        )
+    except ErrorNegocio as e:
+        return _manejar_error_traslado(e)
+
+    return respuesta(True, resultado, "Traslado rechazado exitosamente")
