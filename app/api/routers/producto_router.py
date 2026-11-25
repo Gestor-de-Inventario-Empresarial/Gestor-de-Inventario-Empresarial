@@ -13,7 +13,14 @@ from app.domain.entities.producto import (
 from app.repositories.producto_repository import producto_repository
 from app.services.producto_service import ProductoService
 
-router = APIRouter(prefix="/api/v1/productos", tags=["Inventario"])
+from fastapi import APIRouter, Depends
+from app.api.routers.suscripcion_router import verificar_suscripcion_activa
+
+router = APIRouter(
+    prefix="/api/v1/productos",
+    tags=["Productos"],
+    dependencies=[Depends(verificar_suscripcion_activa)],
+)
 
 service = ProductoService(repo=producto_repository)
 
