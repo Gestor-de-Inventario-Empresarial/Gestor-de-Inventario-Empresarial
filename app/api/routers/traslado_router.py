@@ -9,8 +9,13 @@ from app.domain.entities.traslado import TrasladoCreate, TrasladoRechazo
 from app.repositories.traslado_repository import traslado_repository
 from app.services.traslado_service import TrasladoService
 
-router = APIRouter(prefix="/api/v1/traslados", tags=["Traslados"])
+from app.api.routers.suscripcion_router import verificar_suscripcion_activa
 
+router = APIRouter(
+    prefix="/api/v1/traslados",
+    tags=["Traslados"],
+    dependencies=[Depends(verificar_suscripcion_activa)],
+)
 service = TrasladoService(repo=traslado_repository)
 
 

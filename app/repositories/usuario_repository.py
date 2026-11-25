@@ -3,10 +3,14 @@ from typing import Optional
 from app.domain.entities.usuario import Usuario
 from app.repositories.empresa_repository import empresa_repository
 from app.repositories.sucursal_repository import sucursal_repository
-
+from app.repositories.suscripcion_repository import suscripcion_repository
+from app.services.suscripcion_service import SuscripcionService
 
 class UsuarioRepository:
     def __init__(self):
+        def consultar_estado_suscripcion(self, id_empresa: int) -> str:
+            return SuscripcionService(suscripcion_repository).obtener_estado_simple(id_empresa)
+        
         self._datos: list[Usuario] = [
             Usuario(
                 id=1,
@@ -19,6 +23,7 @@ class UsuarioRepository:
                 estado="activo",
             )
         ]
+        
         self._siguiente_id: int = 2
         self._suscripciones_empresa: dict[int, str] = {1: "activa"}
 
