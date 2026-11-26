@@ -1,98 +1,91 @@
+from datetime import date
 from typing import Optional
 
-from app.domain.entities.producto import Producto
-from app.repositories.sucursal_repository import sucursal_repository
+from app.domain.entities.pago import TransaccionPago
+from app.repositories.empresa_repository import empresa_repository
+from app.repositories.suscripcion_repository import suscripcion_repository
 
 
-class ProductoRepository:
-    """Almacenamiento en memoria para productos por sucursal y trazabilidad de retiros."""
-
+class PagoRepository:
     def __init__(self):
-        self._datos: list[Producto] = []
-        self._retiros: list[dict] = []
+        self._planes: dict[int, dict] = {
+            1: {"id_plan": 1, "nombre": "Plan Mensual Estándar", "monto": 150000},
+            2: {"id_plan": 2, "nombre": "Plan Mensual Empresarial", "monto": 280000},
+        }
+        self._transacciones: list[TransaccionPago] = []
+        self._revisiones_manuales: list[dict] = []
         self._siguiente_id: int = 1
 
-    # Punto de enlace con MOD-01 (INT-06: Sucursales.validarEstado)
-    def obtener_estado_sucursal(self, id_sucursal: int) -> Optional[str]:
-        sucursal = next(
-            (s for s in sucursal_repository._datos if s.id == id_sucursal),
+    # Punto de enlace con MOD-01 (Empresas.consultarEmpresa)
+    def consultar_empresa(self, id_empresa: int) -> Optional[dict]:
+        empresa = next(
+            (e for e in empresa_repository._datos if e.id == id_empresa),
             None,
         )
-        return sucursal.estado if sucursal else None
-
-    def existe_codigo_en_sucursal(self, id_sucursal: int, codigo: str) -> bool:
-        buscado = codigo.strip().lower()
-        return any(
-            p.id_sucursal == id_sucursal and p.codigo.lower() == buscado
-            for p in self._datos
-        )
-
-    def crear(self, producto: Producto) -> Producto:
-        producto.id = self._siguiente_id
-        self._siguiente_id += 1
-        self._datos.append(producto)
-        return producto
-
-    def buscar_por_id(self, id_producto: int) -> Optional[Producto]:
-        return next((p for p in self._datos if p.id == id_producto), None)
-
-    def buscar_por_id_y_sucursal(
-        self, id_producto: int, id_sucursal: int
-    ) -> Optional[Producto]:
-        return next(
-            (
-                p
-                for p in self._datos
-                if p.id == id_producto and p.id_sucursal == id_sucursal
-            ),
-            None,
-        )
-
-    def actualizar(self, producto: Producto) -> Producto:
-        for i, existente in enumerate(self._datos):
-            if existente.id == producto.id:
-                self._datos[i] = producto
-                break
-        return producto
-
-    # HU-07: consulta de existencias por sucursal y criterio (nombre o código)
-    def buscar_por_sucursal_y_criterio(
-        self, id_sucursal: int, busqueda: Optional[str] = None
-    ) -> list[Producto]:
-        productos_sucursal = [p for p in self._datos if p.id_sucursal == id_sucursal]
-        if busqueda is None or not busqueda.strip():
-            return productos_sucursal
-
-        criterio = busqueda.strip().lower()
-        return [
-            p
-            for p in productos_sucursal
-            if criterio in p.codigo.lower() or criterio in p.nombre.lower()
-        ]
-
-    # HU-07: punto de enlace con MOD-03 (INT-08: Traslados.consultarPendientes)
-    def consultar_traslados_pendientes(self, id_producto: int) -> list[dict]:
-        return []
-
-    # HU-07: elimina el producto del inventario activo y registra trazabilidad del retiro
-    def retirar(self, producto: Producto, motivo: str, fecha_retiro: str) -> dict:
-        self._datos = [p for p in self._datos if p.id != producto.id]
-        registro = {
-            "id_producto": producto.id,
-            "id_sucursal": producto.id_sucursal,
-            "codigo": producto.codigo,
-            "nombre": producto.nombre,
-            "cantidad": producto.cantidad,
-            "motivo": motivo,
-            "fecha_retiro": fecha_retiro,
-        }
-        self._retiros.append(registro)
+        if empresa is None:
+            return None
         return {
-            "id_producto": producto.id,
-            "motivo": motivo,
-            "fecha_retiro": fecha_retiro,
+            "id_empresa": empresa.id,
+            "nombre": empresa.nombre,
+            "estado": empresa.estado,
         }
 
+    def obtener_plan(self, id_plan: int) -> Optional[dict]:
+        return self._planes.get(id_plan)
 
-# Instancia única compartida por todo el programa
-producto_repository = ProductoRepository()
+    def obtener_siguiente_secuencial(self) -> int:
+        return self._siguiente_id
+
+    def buscar_por_referencia(self, referencia: str) -> Optional[TransaccionPago]:
+        ref_buscada = referencia.strip()
+        return next(
+            (t for t in self._transacciones if t.referencia == ref_buscada),
+            None,
+        )
+
+    def registrar_transaccion(self, transaccion: TransaccionPago) -> TransaccionPago:
+        transaccion.id = self._siguiente_id
+        self._siguiente_id += 1
+        self._transacciones.append(transaccion)
+        return transaccion
+
+    def actualizar_transaccion(self, transaccion: TransaccionPago) -> TransaccionPago:
+        for i, existente in enumerate(self._transacciones):
+            if existente.id == transaccion.id:
+                self._transacciones[i] = transaccion
+                break
+        return transaccion
+
+    def registrar_constancia_revision(self, transaccion: TransaccionPago):
+        self._revisiones_manuales.append(
+            {
+                "id_transaccion": transaccion.id,
+                "id_empresa": transaccion.id_empresa,
+                "referencia": transaccion.referencia,
+                "monto": transaccion.monto,
+                "estado": transaccion.estado,
+            }
+        )
+
+    # Renueva la suscripción en MOD-06 (válida para todas las sucursales de la empresa)
+    def confirmar_pago_y_renovar_suscripcion(
+        self, transaccion: TransaccionPago, fecha_pago: date
+    ):
+        suscripcion_repository.registrar_fecha_pago(transaccion.id_empresa, fecha_pago)
+        self.actualizar_transaccion(transaccion)
+
+    # Cliente de pasarela externa Wompi (solo recibe referencia, monto y token_pago)
+    def procesar_cobro_wompi(
+        self, referencia: str, monto: int, token_pago: str
+    ) -> dict:
+        token_norm = token_pago.strip().lower()
+        if token_norm == "tok_error_pasarela":
+            raise TimeoutError("Tiempo de espera agotado con Wompi")
+        if token_norm == "tok_rechazado":
+            return {"status": "DECLINED", "motivo": "Fondos insuficientes o tarjeta rechazada"}
+        if token_norm == "tok_pendiente":
+            return {"status": "PENDING"}
+        return {"status": "APPROVED"}
+
+
+pago_repository = PagoRepository()

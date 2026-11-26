@@ -2,6 +2,8 @@ from datetime import date
 
 from app.core.exceptions import ErrorNegocio
 from app.domain.entities.pago import (
+    MENSAJE_EVENTO_PROCESADO,
+    MENSAJE_EVENTO_REPETIDO,
     MENSAJE_PAGO_APROBADO,
     MENSAJE_PAGO_PENDIENTE,
     MENSAJE_PAGO_RECHAZADO,
@@ -9,18 +11,22 @@ from app.domain.entities.pago import (
     MENSAJE_PLAN_NO_ENCONTRADO,
     PagoCreate,
     TransaccionPago,
+    WebhookWompiRequest,
 )
 from app.repositories.pago_repository import PagoRepository
 
 MENSAJE_EMPRESA_NO_ENCONTRADA = "Empresa no encontrada"
 MENSAJE_FALLA_PASARELA = "No fue posible comunicarse con la pasarela de pagos"
 MENSAJE_FALLA_REGISTRO_INICIAL = "No fue posible iniciar la transacción de pago"
+MENSAJE_TRANSACCION_NO_ENCONTRADA = "Transacción no encontrada"
+MENSAJE_FALLA_WEBHOOK = "No fue posible procesar el evento de pago"
 
 
 class PagoService:
     def __init__(self, repo: PagoRepository):
         self.repo = repo
 
+    # ── HU-16: pagar suscripción con Wompi ────────────────────
     def procesar_pago(
         self,
         id_empresa_sesion: int,
@@ -98,7 +104,6 @@ class PagoService:
                 MENSAJE_PAGO_PENDIENTE,
             )
 
-        # Estado APPROVED: renovar vigencia (RN-10) y asegurar persistencia con reintentos (RN-11)
         hoy = date.today()
         vigencia = TransaccionPago.calcular_nueva_vigencia(hoy)
         fecha_vencimiento = vigencia["fecha_vencimiento"]
@@ -126,3 +131,50 @@ class PagoService:
             transaccion.to_aprobada_response(),
             MENSAJE_PAGO_APROBADO,
         )
+
+    # ── HU-17: recibir confirmación asíncrona del webhook de Wompi ──
+    def procesar_webhook_wompi(
+        self, datos: WebhookWompiRequest
+    ) -> tuple[dict, str]:
+        try:
+            transaccion = self.repo.buscar_por_referencia(datos.referencia)
+        except Exception as e:
+            raise ErrorNegocio(MENSAJE_FALLA_WEBHOOK, 503) from e
+
+        if transaccion is None:
+            raise ErrorNegocio(MENSAJE_TRANSACCION_NO_ENCONTRADA, 404)
+
+        # Idempotencia: no volver a procesar ni renovar transacciones en estado final
+        if transaccion.es_estado_final():
+            return transaccion.to_webhook_response(), MENSAJE_EVENTO_REPETIDO
+
+        if datos.estado_evento == "aprobada":
+            hoy = date.today()
+            vigencia = TransaccionPago.calcular_nueva_vigencia(hoy)
+            fecha_vencimiento = vigencia["fecha_vencimiento"]
+
+            def _persistir_aprobacion() -> str:
+                transaccion.estado = "aprobada"
+                transaccion.fecha_vencimiento = fecha_vencimiento
+                self.repo.confirmar_pago_y_renovar_suscripcion(transaccion, hoy)
+                return fecha_vencimiento
+
+            guardado_exitoso = transaccion.manejar_inconsistencia(
+                _persistir_aprobacion
+            )
+            if not guardado_exitoso:
+                raise ErrorNegocio(MENSAJE_FALLA_WEBHOOK, 503)
+
+            return transaccion.to_webhook_response(), MENSAJE_EVENTO_PROCESADO
+
+        if datos.estado_evento == "rechazada":
+            transaccion.marcar_rechazada()
+        else:
+            transaccion.marcar_anulada()
+
+        try:
+            self.repo.actualizar_transaccion(transaccion)
+        except Exception as e:
+            raise ErrorNegocio(MENSAJE_FALLA_WEBHOOK, 503) from e
+
+        return transaccion.to_webhook_response(), MENSAJE_EVENTO_PROCESADO
