@@ -2,7 +2,7 @@ import hashlib
 import hmac
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Query
 from fastapi.responses import JSONResponse
 
 from app.core.exceptions import ErrorNegocio
@@ -14,6 +14,7 @@ from app.services.pago_service import PagoService
 CLAVE_SECRETA_WEBHOOK_WOMPI = "wompi-events-secret"
 MENSAJE_FIRMA_INVALIDA = "Firma del evento no válida"
 
+# No usa verificar_suscripcion_activa: pagos e historial siguen disponibles con suscripción vencida
 router = APIRouter(prefix="/api/v1", tags=["Pagos y Suscripciones"])
 
 service = PagoService(repo=pago_repository)
@@ -57,6 +58,54 @@ def verificar_firma_wompi(
         raise ErrorNegocio(MENSAJE_FIRMA_INVALIDA, 401)
 
     return datos
+
+
+@router.get(
+    "/pagos",
+    summary="Consultar historial de pagos",
+    description="Consulta paginada de solo lectura de las transacciones de la empresa en sesión, ordenadas de la más reciente a la más antigua, con filtros opcionales por estado y rango de fechas.",
+)
+def consultar_historial_pagos(
+    estado: Optional[str] = Query(
+        default=None,
+        description="Filtrar por estado ('pendiente', 'aprobada', 'rechazada' o 'pendiente_revision')",
+    ),
+    fecha_inicio: Optional[str] = Query(
+        default=None,
+        description="Fecha inicial en formato YYYY-MM-DD",
+    ),
+    fecha_fin: Optional[str] = Query(
+        default=None,
+        description="Fecha final en formato YYYY-MM-DD",
+    ),
+    pagina: int = Query(
+        default=1,
+        description="Número de página a consultar (mínimo 1)",
+    ),
+    tamano: int = Query(
+        default=10,
+        description="Cantidad de registros por página",
+    ),
+    sesion: tuple[int, str] = Depends(obtener_sesion_pago),
+):
+    id_empresa_sesion, rol_sesion = sesion
+    exito, data, mensaje = service.consultar_historial(
+        id_empresa_sesion=id_empresa_sesion,
+        rol_sesion=rol_sesion,
+        estado=estado,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+        pagina=pagina,
+        tamano=tamano,
+    )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "message": mensaje,
+            "data": data,
+            "success": exito,
+        },
+    )
 
 
 @router.post(

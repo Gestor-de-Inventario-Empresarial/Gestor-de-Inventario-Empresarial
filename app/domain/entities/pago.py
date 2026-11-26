@@ -1,3 +1,4 @@
+import re
 from datetime import date
 from typing import Callable, Optional
 
@@ -8,6 +9,7 @@ from app.domain.entities.suscripcion import Suscripcion
 
 MENSAJE_CAMPOS_OBLIGATORIOS = "El plan y el token de pago son obligatorios"
 MENSAJE_SIN_PERMISO_PAGAR = "No tiene permisos para realizar pagos"
+MENSAJE_SIN_PERMISO_HISTORIAL = "No tiene permisos para consultar el historial de pagos"
 MENSAJE_PLAN_NO_ENCONTRADO = "Plan de suscripción no encontrado"
 MENSAJE_PAGO_APROBADO = "Pago aprobado y suscripción renovada exitosamente"
 MENSAJE_PAGO_RECHAZADO = "El pago fue rechazado por la pasarela"
@@ -20,7 +22,25 @@ MENSAJE_ESTRUCTURA_WEBHOOK_INVALIDA = "El evento no tiene la estructura esperada
 MENSAJE_EVENTO_PROCESADO = "Evento de pago procesado exitosamente"
 MENSAJE_EVENTO_REPETIDO = "El evento ya fue procesado anteriormente"
 
+MENSAJE_ESTADO_HISTORIAL_INVALIDO = "El estado indicado no es válido"
+MENSAJE_FORMATO_FECHA_INVALIDO = "Las fechas deben tener formato YYYY-MM-DD"
+MENSAJE_RANGO_FECHAS_INVALIDO = (
+    "La fecha de inicio no puede ser posterior a la fecha de fin"
+)
+MENSAJE_PAGINACION_INVALIDA = "Los parámetros de paginación deben ser enteros positivos"
+MENSAJE_HISTORIAL_EXITOSO = "Consulta de historial de pagos exitosa"
+MENSAJE_HISTORIAL_VACIO = "No existen transacciones para los filtros indicados"
+
 MAX_REINTENTOS_REGISTRO = 3
+MAX_TAMANO_PAGINA = 100
+PATRON_FECHA_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+ESTADOS_HISTORIAL_VALIDOS = (
+    "pendiente",
+    "aprobada",
+    "rechazada",
+    "pendiente_revision",
+)
 ESTADOS_FINALES_TRANSACCION = ("aprobada", "rechazada", "anulada")
 MAPEO_ESTADOS_WOMPI = {
     "APPROVED": "aprobada",
@@ -130,9 +150,54 @@ class TransaccionPago:
         self.motivo_rechazo = motivo_rechazo
 
     @staticmethod
-    def validar_permiso_administrador(rol_sesion: str):
+    def validar_permiso_administrador(
+        rol_sesion: str, mensaje: str = MENSAJE_SIN_PERMISO_PAGAR
+    ):
         if not isinstance(rol_sesion, str) or rol_sesion.strip().lower() != "administrador":
-            raise ErrorNegocio(MENSAJE_SIN_PERMISO_PAGAR, 403)
+            raise ErrorNegocio(mensaje, 403)
+
+    @staticmethod
+    def validar_filtros_historial(
+        estado: Optional[str],
+        fecha_inicio: Optional[str],
+        fecha_fin: Optional[str],
+        pagina: int,
+        tamano: int,
+    ) -> tuple[Optional[str], Optional[date], Optional[date]]:
+        if pagina < 1 or tamano < 1 or tamano > MAX_TAMANO_PAGINA:
+            raise ErrorNegocio(MENSAJE_PAGINACION_INVALIDA, 400)
+
+        estado_normalizado: Optional[str] = None
+        if estado is not None:
+            estado_limpio = estado.strip().lower()
+            if estado_limpio not in ESTADOS_HISTORIAL_VALIDOS:
+                raise ErrorNegocio(MENSAJE_ESTADO_HISTORIAL_INVALIDO, 400)
+            estado_normalizado = estado_limpio
+
+        inicio_dt: Optional[date] = None
+        if fecha_inicio is not None:
+            fecha_ini_str = fecha_inicio.strip()
+            if not PATRON_FECHA_ISO.match(fecha_ini_str):
+                raise ErrorNegocio(MENSAJE_FORMATO_FECHA_INVALIDO, 400)
+            try:
+                inicio_dt = date.fromisoformat(fecha_ini_str)
+            except ValueError as e:
+                raise ErrorNegocio(MENSAJE_FORMATO_FECHA_INVALIDO, 400) from e
+
+        fin_dt: Optional[date] = None
+        if fecha_fin is not None:
+            fecha_fin_str = fecha_fin.strip()
+            if not PATRON_FECHA_ISO.match(fecha_fin_str):
+                raise ErrorNegocio(MENSAJE_FORMATO_FECHA_INVALIDO, 400)
+            try:
+                fin_dt = date.fromisoformat(fecha_fin_str)
+            except ValueError as e:
+                raise ErrorNegocio(MENSAJE_FORMATO_FECHA_INVALIDO, 400) from e
+
+        if inicio_dt is not None and fin_dt is not None and inicio_dt > fin_dt:
+            raise ErrorNegocio(MENSAJE_RANGO_FECHAS_INVALIDO, 400)
+
+        return estado_normalizado, inicio_dt, fin_dt
 
     @staticmethod
     def generar_referencia(
@@ -198,4 +263,14 @@ class TransaccionPago:
         return {
             "referencia": self.referencia,
             "estado": self.estado,
+        }
+
+    def to_historial_response(self) -> dict:
+        return {
+            "id_transaccion": self.id,
+            "referencia": self.referencia,
+            "id_plan": self.id_plan,
+            "monto": self.monto,
+            "estado": self.estado,
+            "fecha": self.fecha_creacion.isoformat(),
         }

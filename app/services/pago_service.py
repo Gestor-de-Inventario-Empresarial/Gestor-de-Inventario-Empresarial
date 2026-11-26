@@ -1,14 +1,18 @@
 from datetime import date
+from typing import Optional
 
 from app.core.exceptions import ErrorNegocio
 from app.domain.entities.pago import (
     MENSAJE_EVENTO_PROCESADO,
     MENSAJE_EVENTO_REPETIDO,
+    MENSAJE_HISTORIAL_EXITOSO,
+    MENSAJE_HISTORIAL_VACIO,
     MENSAJE_PAGO_APROBADO,
     MENSAJE_PAGO_PENDIENTE,
     MENSAJE_PAGO_RECHAZADO,
     MENSAJE_PAGO_REVISION,
     MENSAJE_PLAN_NO_ENCONTRADO,
+    MENSAJE_SIN_PERMISO_HISTORIAL,
     PagoCreate,
     TransaccionPago,
     WebhookWompiRequest,
@@ -20,6 +24,7 @@ MENSAJE_FALLA_PASARELA = "No fue posible comunicarse con la pasarela de pagos"
 MENSAJE_FALLA_REGISTRO_INICIAL = "No fue posible iniciar la transacción de pago"
 MENSAJE_TRANSACCION_NO_ENCONTRADA = "Transacción no encontrada"
 MENSAJE_FALLA_WEBHOOK = "No fue posible procesar el evento de pago"
+MENSAJE_FALLA_HISTORIAL = "No fue posible consultar el historial de pagos"
 
 
 class PagoService:
@@ -144,7 +149,6 @@ class PagoService:
         if transaccion is None:
             raise ErrorNegocio(MENSAJE_TRANSACCION_NO_ENCONTRADA, 404)
 
-        # Idempotencia: no volver a procesar ni renovar transacciones en estado final
         if transaccion.es_estado_final():
             return transaccion.to_webhook_response(), MENSAJE_EVENTO_REPETIDO
 
@@ -178,3 +182,55 @@ class PagoService:
             raise ErrorNegocio(MENSAJE_FALLA_WEBHOOK, 503) from e
 
         return transaccion.to_webhook_response(), MENSAJE_EVENTO_PROCESADO
+
+    # ── HU-18: consultar historial de pagos (solo lectura) ────
+    def consultar_historial(
+        self,
+        id_empresa_sesion: int,
+        rol_sesion: str,
+        estado: Optional[str] = None,
+        fecha_inicio: Optional[str] = None,
+        fecha_fin: Optional[str] = None,
+        pagina: int = 1,
+        tamano: int = 10,
+    ) -> tuple[bool, dict, str]:
+        TransaccionPago.validar_permiso_administrador(
+            rol_sesion, mensaje=MENSAJE_SIN_PERMISO_HISTORIAL
+        )
+
+        estado_norm, inicio_dt, fin_dt = TransaccionPago.validar_filtros_historial(
+            estado=estado,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            pagina=pagina,
+            tamano=tamano,
+        )
+
+        try:
+            transacciones = self.repo.listar_por_empresa(
+                id_empresa=id_empresa_sesion,
+                estado=estado_norm,
+                fecha_inicio=inicio_dt,
+                fecha_fin=fin_dt,
+            )
+        except Exception as e:
+            raise ErrorNegocio(MENSAJE_FALLA_HISTORIAL, 503) from e
+
+        total_registros = len(transacciones)
+        inicio_slice = (pagina - 1) * tamano
+        fin_slice = inicio_slice + tamano
+        pagina_actual = [
+            t.to_historial_response() for t in transacciones[inicio_slice:fin_slice]
+        ]
+
+        data = {
+            "pagina": pagina,
+            "tamano": tamano,
+            "total_registros": total_registros,
+            "transacciones": pagina_actual,
+        }
+
+        if total_registros == 0:
+            return False, data, MENSAJE_HISTORIAL_VACIO
+
+        return True, data, MENSAJE_HISTORIAL_EXITOSO
