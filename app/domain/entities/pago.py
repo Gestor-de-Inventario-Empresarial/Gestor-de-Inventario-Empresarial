@@ -16,7 +16,20 @@ MENSAJE_PAGO_REVISION = (
     "El pago fue recibido y está en revisión; se activará el servicio una vez verificado"
 )
 
+MENSAJE_ESTRUCTURA_WEBHOOK_INVALIDA = "El evento no tiene la estructura esperada"
+MENSAJE_EVENTO_PROCESADO = "Evento de pago procesado exitosamente"
+MENSAJE_EVENTO_REPETIDO = "El evento ya fue procesado anteriormente"
+
 MAX_REINTENTOS_REGISTRO = 3
+ESTADOS_FINALES_TRANSACCION = ("aprobada", "rechazada", "anulada")
+MAPEO_ESTADOS_WOMPI = {
+    "APPROVED": "aprobada",
+    "APROBADO": "aprobada",
+    "DECLINED": "rechazada",
+    "RECHAZADO": "rechazada",
+    "VOIDED": "anulada",
+    "ANULADO": "anulada",
+}
 
 
 class PagoCreate(BaseModel):
@@ -44,6 +57,53 @@ class PagoCreate(BaseModel):
 
         valores["token_pago"] = token_pago.strip()
         return valores
+
+
+class WebhookWompiRequest(BaseModel):
+    event: str
+    referencia: str
+    estado_evento: str
+    estado_crudo: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def validar_estructura_evento(cls, valores):
+        if not isinstance(valores, dict):
+            raise ValueError(MENSAJE_ESTRUCTURA_WEBHOOK_INVALIDA)
+
+        evento = valores.get("event")
+        data = valores.get("data")
+        if (
+            not isinstance(evento, str)
+            or not evento.strip()
+            or not isinstance(data, dict)
+        ):
+            raise ValueError(MENSAJE_ESTRUCTURA_WEBHOOK_INVALIDA)
+
+        transaccion = data.get("transaction")
+        if not isinstance(transaccion, dict):
+            raise ValueError(MENSAJE_ESTRUCTURA_WEBHOOK_INVALIDA)
+
+        referencia = transaccion.get("reference")
+        status = transaccion.get("status")
+        if (
+            not isinstance(referencia, str)
+            or not referencia.strip()
+            or not isinstance(status, str)
+            or not status.strip()
+        ):
+            raise ValueError(MENSAJE_ESTRUCTURA_WEBHOOK_INVALIDA)
+
+        status_upper = status.strip().upper()
+        if status_upper not in MAPEO_ESTADOS_WOMPI:
+            raise ValueError(MENSAJE_ESTRUCTURA_WEBHOOK_INVALIDA)
+
+        return {
+            "event": evento.strip(),
+            "referencia": referencia.strip(),
+            "estado_evento": MAPEO_ESTADOS_WOMPI[status_upper],
+            "estado_crudo": status.strip(),
+        }
 
 
 class TransaccionPago:
@@ -75,12 +135,21 @@ class TransaccionPago:
             raise ErrorNegocio(MENSAJE_SIN_PERMISO_PAGAR, 403)
 
     @staticmethod
-    def generar_referencia(id_empresa: int, secuencial: int, fecha: Optional[date] = None) -> str:
+    def generar_referencia(
+        id_empresa: int, secuencial: int, fecha: Optional[date] = None
+    ) -> str:
         fecha_ref = (fecha or date.today()).strftime("%Y%m%d")
         return f"SUB-{id_empresa}-{fecha_ref}-{secuencial:04d}"
 
+    def es_estado_final(self) -> bool:
+        return self.estado.strip().lower() in ESTADOS_FINALES_TRANSACCION
+
     def marcar_rechazada(self, motivo: str = "Transacción declinada por la pasarela"):
         self.estado = "rechazada"
+        self.motivo_rechazo = motivo
+
+    def marcar_anulada(self, motivo: str = "Transacción anulada por la pasarela"):
+        self.estado = "anulada"
         self.motivo_rechazo = motivo
 
     def marcar_pendiente(self):
@@ -121,6 +190,12 @@ class TransaccionPago:
     def to_estado_response(self) -> dict:
         return {
             "id_transaccion": self.id,
+            "referencia": self.referencia,
+            "estado": self.estado,
+        }
+
+    def to_webhook_response(self) -> dict:
+        return {
             "referencia": self.referencia,
             "estado": self.estado,
         }
