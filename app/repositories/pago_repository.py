@@ -36,6 +36,35 @@ class PagoRepository:
     def obtener_siguiente_secuencial(self) -> int:
         return self._siguiente_id
 
+    def buscar_por_referencia(self, referencia: str) -> Optional[TransaccionPago]:
+        ref_buscada = referencia.strip()
+        return next(
+            (t for t in self._transacciones if t.referencia == ref_buscada),
+            None,
+        )
+
+    # Consulta de solo lectura (HU-18): filtrada por empresa y ordenada de más reciente a más antigua
+    def listar_por_empresa(
+        self,
+        id_empresa: int,
+        estado: Optional[str] = None,
+        fecha_inicio: Optional[date] = None,
+        fecha_fin: Optional[date] = None,
+    ) -> list[TransaccionPago]:
+        filtradas = [
+            t
+            for t in self._transacciones
+            if t.id_empresa == id_empresa
+            and (estado is None or t.estado.strip().lower() == estado)
+            and (fecha_inicio is None or t.fecha_creacion >= fecha_inicio)
+            and (fecha_fin is None or t.fecha_creacion <= fecha_fin)
+        ]
+        return sorted(
+            filtradas,
+            key=lambda t: (t.fecha_creacion, t.id or 0),
+            reverse=True,
+        )
+
     def registrar_transaccion(self, transaccion: TransaccionPago) -> TransaccionPago:
         transaccion.id = self._siguiente_id
         self._siguiente_id += 1
